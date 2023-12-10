@@ -1,0 +1,118 @@
+-- 1. Рассчитайте количество проданных и пропавших продуктов на дату.
+SELECT
+	transaction_date,
+	sum(quantity_sold) AS quantity_sold,
+	sum(waste) AS quantity_wasted
+	FROM pastry_inventory pi  
+GROUP BY 1
+
+-- 2. Посчитать количество клиентов по поколениям.
+WITH cg AS(
+	SELECT *
+	FROM customer c 
+	LEFT JOIN generations g
+	ON c.birth_year = g.birth_year)
+SELECT	
+	generation,
+	count(customer_id) AS customers_count
+FROM cg
+GROUP BY 1
+
+-- 3. Найдите топ 10 самых продаваемых товаров каждый день и проранжируйте их по дням и кол-ву проданных штук.
+WITH tbl AS(SELECT *,
+		ROW_NUMBER() OVER (PARTITION BY transaction_date ORDER BY quantity_sold_per_day desc) AS rating
+	FROM (SELECT transaction_date,
+		product_name,
+		SUM(quantity) OVER (PARTITION BY transaction_date, product_name) AS quantity_sold_per_day
+		FROM sales_reciepts sr
+		LEFT JOIN product p
+		ON sr.product_id = p.product_id)
+	GROUP BY 1,2)
+SELECT *
+FROM tbl
+WHERE rating < 11
+
+-- 4. Найдите разницу между выручкой в текущий и предыдущий день.
+SELECT *,
+	LAG(sales_amount) OVER (ORDER BY transaction_date) AS prev_sales_amount,
+	sales_amount - LAG(sales_amount) OVER (ORDER BY transaction_date) AS difference_sales_amount,
+	round((sales_amount * 100 / LAG(sales_amount) OVER (ORDER BY transaction_date)) - 100) AS percent_difference
+	FROM
+		(SELECT
+		transaction_date,
+		SUM(line_item_amount) AS sales_amount
+		FROM sales_reciepts sr 
+		GROUP BY 1)
+
+-- 5. Выведите только те названия регионов, где продавался продукт “Columbian Medium Roast” с последней датой продажи.
+WITH srso AS(
+	SELECT *
+	FROM sales_reciepts sr 
+	LEFT JOIN sales_outlet so
+	ON sr.sales_outlet_id = so.sales_outlet_id)
+SELECT
+	neighborhood,
+	max(transaction_date) AS last_transaction
+FROM srso
+RIGHT JOIN product p  
+	ON srso.product_id = p.product_id
+WHERE product_name = 'Columbian Medium Roast'
+GROUP BY 1
+
+-- 6. Соберите витрину из следующих полей
+-- Transaction_date, sales_outlet_id, store_address, product_id, product_name, customer_id, customer_name, 
+-- gender (заменить на Male, Female, Not Defined если пустое значение), unit_price, quantity, line_item_amount.
+CREATE VIEW sr_so_p_c AS
+SELECT
+	sr.transaction_date,
+	so.sales_outlet_id,
+	so.store_address,
+	p.product_id,
+	p.product_name,
+	c.customer_id,
+	c.customer_name,
+	CASE c.gender
+		WHEN 'M'
+			THEN 'Male'
+		WHEN 'F'
+			THEN 'Female'
+		ELSE 'Not Defined'
+	END gender,
+	sr.unit_price,
+	sr.quantity,
+	sr.line_item_amount
+FROM sales_reciepts sr 
+LEFT JOIN sales_outlet so 
+ON sr.sales_outlet_id = so.sales_outlet_id
+LEFT JOIN product p 
+ON sr.product_id = p.product_id
+LEFT JOIN customer c 
+ON sr.customer_id = c.customer_id
+
+-- 7. Используя витрину в качестве табличного выражения или подзапроса, посчитайте количество транзакций по полю gender.
+SELECT
+	gender,
+	count(*) AS count
+FROM sr_so_p_c
+GROUP BY 1
+ORDER BY 2
+
+-- 8. Посчитать кумулятивное число проданных продуктов по дням.
+SELECT
+	transaction_date,
+	quantity,
+	SUM(quantity) OVER (ORDER BY transaction_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS com_quantity
+FROM sales_reciepts sr 
+
+-- 9. Найдите разницу между максимальной и минимальной ценой товара в категории.
+SELECT
+	product_category,
+	product_type,
+	product_name,
+	CAST(REPLACE(current_retail_price,'$','') AS FLOAT) AS retail_price,
+	CAST(REPLACE(MAX(current_retail_price) OVER w,'$','') AS FLOAT) AS max_price_category,
+	CAST(REPLACE(MIN(current_retail_price) OVER w,'$','') AS FLOAT) AS min_price_category,
+	CAST(REPLACE(MAX(current_retail_price) OVER w,'$','') AS FLOAT) - CAST(REPLACE(MIN(current_retail_price) OVER w,'$','') AS FLOAT) AS difference
+FROM product p
+GROUP BY 1,2,3
+WINDOW w AS (PARTITION BY product_category)
